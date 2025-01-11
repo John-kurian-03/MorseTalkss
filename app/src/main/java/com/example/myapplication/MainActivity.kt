@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.modifier.modifierLocalMapOf
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -25,6 +26,9 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.myapplication.ui.theme.MyApplicationTheme
 import com.example.myapplication.composables.CameraPreviewScreen
+import com.example.myapplication.composables.FlashlightController
+import com.example.myapplication.composables.TextToMorse
+import kotlinx.coroutines.*
 
 class MainActivity : ComponentActivity() {
 
@@ -89,6 +93,7 @@ class MainActivity : ComponentActivity() {
 fun HomeScreen(onRequestPermission: () -> Unit) {
     var isCameraPreviewVisible by remember { mutableStateOf(false) }
     var text by remember { mutableStateOf("") }
+    val context = LocalContext.current
     var messages by remember {
         mutableStateOf(listOf<String>())
     }
@@ -170,9 +175,16 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
         Button(
             onClick = {
                 if (text.isNotEmpty()){
+                    val textToMorse = TextToMorse()
+                    val morseCode = textToMorse.translateToMorse(text)
+                    val flashlightController = FlashlightController(context)
+                    flashlightController.transmitMorseCode(morseCode)
                     messages = messages +text
                     text = ""
-                }},
+                }
+
+
+                      },
             colors = ButtonDefaults.buttonColors(containerColor = Color.White),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
