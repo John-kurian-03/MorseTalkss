@@ -94,18 +94,14 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
     var isCameraPreviewVisible by remember { mutableStateOf(false) }
     var text by remember { mutableStateOf("") }
     val context = LocalContext.current
-    var messages by remember {
-        mutableStateOf(listOf<String>())
-    }
-
+    var messages by remember { mutableStateOf(listOf<String>()) }
 
     Column(
         modifier = Modifier
             .background(Color.DarkGray)
-            .padding(top=25.dp),
+            .padding(top = 25.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Title or introductory text
         Text(
             text = "Morse Talk",
             color = Color.White,
@@ -113,20 +109,19 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
             modifier = Modifier.padding(bottom = 32.dp)
         )
 
-
-
-
         if (isCameraPreviewVisible) {
-            CameraPreviewScreen()
+            CameraPreviewScreen { cameraControl ->
+                // Handle camera control here if needed
+                Log.d("HomeScreen", "CameraControl received: $cameraControl")
+            }
         }
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .background(Color.DarkGray)
+                .background(Color.Black)
         ) {
-
-
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -143,7 +138,7 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
                             text = message,
                             modifier = Modifier
                                 .align(Alignment.CenterEnd)
-                                .background(Color.Gray, shape = RoundedCornerShape(8.dp))
+                                .background(Color.Green, shape = RoundedCornerShape(8.dp))
                                 .padding(16.dp),
                             color = Color.White
                         )
@@ -162,29 +157,26 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
             value = text,
             modifier = Modifier.fillMaxWidth(),
             onValueChange = { text = it },
-            label = {
-                Text("Enter message", color = Color.White)
-            }
+            label = { Text("Enter message", color = Color.White) }
         )
     }
-    Row(verticalAlignment = Alignment.Bottom,
+
+    Row(
+        verticalAlignment = Alignment.Bottom,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier.padding(bottom = 12.5.dp)
-    )
-    {
+    ) {
         Button(
             onClick = {
-                if (text.isNotEmpty()){
+                if (text.isNotEmpty()) {
                     val textToMorse = TextToMorse()
                     val morseCode = textToMorse.translateToMorse(text)
                     val flashlightController = FlashlightController(context)
                     flashlightController.transmitMorseCode(morseCode)
-                    messages = messages +text
+                    messages = messages + text
                     text = ""
                 }
-
-
-                      },
+            },
             colors = ButtonDefaults.buttonColors(containerColor = Color.White),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
@@ -196,9 +188,8 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
 
         Button(
             onClick = {
-                onRequestPermission()  // Request permission when the button is clicked
-                isCameraPreviewVisible = true // Show the camera preview
-
+                onRequestPermission()  // Request camera permission
+                isCameraPreviewVisible = true  // Show the camera preview
             },
             colors = ButtonDefaults.buttonColors(containerColor = Color.White),
             shape = RoundedCornerShape(12.dp),
@@ -208,10 +199,9 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
         ) {
             Text(text = "Receive", color = Color.DarkGray, fontSize = 16.sp)
         }
-
     }
-
 }
+
 
 
 
