@@ -1,5 +1,22 @@
 package com.example.myapplication
-
+import com.airbnb.lottie.compose.LottieAnimation
+import com.airbnb.lottie.compose.LottieCompositionSpec
+import com.airbnb.lottie.compose.rememberLottieComposition
+import com.airbnb.lottie.compose.animateLottieCompositionAsState
+import com.airbnb.lottie.compose.LottieConstants
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.ColorFilter
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -17,6 +34,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.modifier.modifierLocalMapOf
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.LineHeightStyle
@@ -24,11 +42,14 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.airbnb.lottie.LottieComposition
 import com.example.myapplication.ui.theme.MyApplicationTheme
 import com.example.myapplication.composables.CameraPreviewScreen
 import com.example.myapplication.composables.FlashlightController
 import com.example.myapplication.composables.TextToMorse
 import kotlinx.coroutines.*
+import org.opencv.android.OpenCVLoader
+
 
 class MainActivity : ComponentActivity() {
 
@@ -46,13 +67,25 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (OpenCVLoader.initLocal()) {
+            Log.d("OpenCV", "OpenCV initialization succeeded")
+        } else {
+            Log.d("OpenCV", "OpenCV initialization failed")
+        }
+
+        setTheme(android.R.style.Theme_NoTitleBar_Fullscreen)
         setContent {
+            var showSplashScreen by remember { mutableStateOf(true) }
             MyApplicationTheme {  // Use your original theme here
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    HomeScreen { requestCameraPermission() }
+                    if (showSplashScreen) {
+                        MyLottieSplashScreen { showSplashScreen = false }
+                    } else {
+                        HomeScreen { requestCameraPermission() }
+                    }
                 }
             }
         }
@@ -188,8 +221,9 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
 
         Button(
             onClick = {
-                onRequestPermission()  // Request camera permission
-                isCameraPreviewVisible = true  // Show the camera preview
+                 // Request camera permission
+                isCameraPreviewVisible = true
+                onRequestPermission() // Show the camera preview
             },
             colors = ButtonDefaults.buttonColors(containerColor = Color.White),
             shape = RoundedCornerShape(12.dp),
@@ -210,5 +244,72 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
 fun HomeScreenPreview() {
     MyApplicationTheme {  // Use your original theme here
         HomeScreen { }
+    }
+}
+
+@Composable
+fun MyLottie() {
+
+    val preLoaderLottie by rememberLottieComposition(
+        LottieCompositionSpec.RawRes(R.raw.splash_animation)
+    )
+
+    val preLoaderProgress by animateLottieCompositionAsState(
+        preLoaderLottie,
+        isPlaying = true,
+        iterations = LottieConstants.IterateForever,
+        speed = 1.5f
+    )
+
+    LottieAnimation(
+        composition = preLoaderLottie,
+        progress = { preLoaderProgress.coerceIn(0f, 0.9f) },
+        modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = 1.5f, scaleY = 1.5f, translationY = (-300f))
+    )
+}
+
+@Composable
+fun MyLottieSplashScreen(onSplashComplete: () -> Unit) {
+    // Use a custom font
+    val customFont = FontFamily(Font(R.font.del)) // Replace with your font file name
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.White), // Optional background color
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Top
+    ) {
+        Spacer(modifier = Modifier.height(80.dp))
+        // Fancy Gradient Text
+        Text(
+            text = "Morse Talk",
+            style = TextStyle(
+                fontSize = 60.sp, // Large font size
+                fontFamily = customFont, // Apply the custom font
+                fontWeight = FontWeight.Bold, // Bold text
+                brush = Brush.linearGradient( // Gradient effect
+                    colors = listOf(Color.Cyan, Color.Magenta)
+                ),
+                shadow = Shadow( // Add shadow for depth
+                    color = Color.Gray,
+                    //offset = androidx.compose.ui.geometry.Offset(2f, 2f),
+                    blurRadius = 4f
+                )
+            ),
+
+            modifier = Modifier.padding(bottom = 2.dp, top = 90.dp)
+
+            // Space between text and animation
+        )
+
+        // Lottie animation
+        MyLottie()
+    }
+
+    // Navigate to HomeScreen after a delay
+    LaunchedEffect(Unit) {
+        delay(2750) // Adjust delay as needed
+        onSplashComplete() // Signal to move to HomeScreen
     }
 }

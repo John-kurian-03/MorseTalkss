@@ -1,0 +1,2 @@
+ninja: Entering directory `C:\Users\jonat\Videos\MorseTalk\openCV\.cxx\Debug\53b72x1w\arm64-v8a'
+ninja: no work to do.

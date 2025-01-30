@@ -39,11 +39,12 @@ class FlashlightController(private val context: Context) {
 
     fun transmitMorseCode(morseCode: String) {
         CoroutineScope(Dispatchers.IO).launch {
+            delay(600)
             for (char in morseCode) {
                 when (char) {
-                    '.' -> blink(200)
-                    '-' -> blink(600)
-                    ' ' -> delay(600)
+                    '.' -> blink(100)
+                    '-' -> blink(400)
+                    ' ' -> delay(700)
                 }
             }
         }
