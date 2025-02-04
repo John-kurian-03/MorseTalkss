@@ -10,13 +10,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.unit.TextUnit
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.Canvas
-import androidx.compose.ui.graphics.ColorFilter
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -35,14 +29,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.modifier.modifierLocalMapOf
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import com.airbnb.lottie.LottieComposition
 import com.example.myapplication.ui.theme.MyApplicationTheme
 import com.example.myapplication.composables.CameraPreviewScreen
 import com.example.myapplication.composables.FlashlightController
@@ -221,17 +211,28 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
 
         Button(
             onClick = {
-                 // Request camera permission
-                isCameraPreviewVisible = true
-                onRequestPermission() // Show the camera preview
+                if (!isCameraPreviewVisible) {
+                    // Request camera permission and show preview
+                    isCameraPreviewVisible = true
+                    onRequestPermission()
+                } else {
+                    // Hide camera preview when clicked again
+                    isCameraPreviewVisible = false
+                }
             },
-            colors = ButtonDefaults.buttonColors(containerColor = Color.White),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (isCameraPreviewVisible) Color.Green else Color.White
+            ),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .weight(1f)
                 .height(50.dp)
         ) {
-            Text(text = "Receive", color = Color.DarkGray, fontSize = 16.sp)
+            Text(
+                text = if (isCameraPreviewVisible) "Receiving..." else "Receive",
+                color = Color.DarkGray,
+                fontSize = 16.sp
+            )
         }
     }
 }
