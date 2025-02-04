@@ -20,6 +20,18 @@ import androidx.core.content.ContextCompat
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import org.opencv.core.CvType
+import org.opencv.core.Mat
+import org.opencv.core.Core
+import org.opencv.imgproc.Imgproc
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
+import androidx.compose.ui.graphics.Color
+
+
 @Composable
 fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
@@ -32,32 +44,92 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
     // State to hold CameraControl
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
 
+    // State to hold brightness level
+    var brightnessLevel by remember { mutableStateOf(0.0) }
+
     // Set up CameraX
     LaunchedEffect(lensFacing) {
         val cameraProvider = context.getCameraProvider()
         cameraProvider.unbindAll()
 
+        // Add Image Analysis to capture frames
+        val imageAnalyzer = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+            .also { analysis ->
+                analysis.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
+                    brightnessLevel = analyzeBrightness(imageProxy)
+                    imageProxy.close()
+                }
+            }
+
         val camera = cameraProvider.bindToLifecycle(
             lifecycleOwner,
             CameraSelector.Builder().requireLensFacing(lensFacing).build(),
-            preview
+            preview,
+            imageAnalyzer // Add the analyzer here
         )
 
-        cameraControl = camera.cameraControl // Extract CameraControl
+        cameraControl = camera.cameraControl
         preview.setSurfaceProvider(previewView.surfaceProvider)
 
-        // Pass CameraControl to the parent via the callback
         cameraControl?.let(onCameraControlReady)
     }
 
-    // Camera preview
-    AndroidView(
-        factory = { previewView },
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(screenHeight / 3)
-            .offset(y = 140.dp)
+    // Display camera preview and brightness
+    Column {
+        AndroidView(
+            factory = { previewView },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(screenHeight / 3)
+                .offset(y = 140.dp)
+        )
+        Text(
+            text = if (brightnessLevel > 50) "Flash Detected!" else "No Flash Detected",
+            color = Color.White,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        )
+    }
+}
+
+private fun analyzeBrightness(imageProxy: ImageProxy): Double {
+    val buffer = imageProxy.planes[0].buffer
+    val bytes = ByteArray(buffer.remaining())
+    buffer.get(bytes)
+
+    val width = imageProxy.width
+    val height = imageProxy.height
+
+    // Convert to OpenCV Mat (YUV to Gray)
+    val mat = Mat(height, width, CvType.CV_8UC1)
+    mat.put(0, 0, bytes)
+
+    val grayMat = Mat()
+    Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_YUV2GRAY_420)
+
+    // Focus on the center of the frame (ROI)
+    val centerX = width / 2
+    val centerY = height / 2
+    val roiSize = 100 // Size of the region to focus on
+    val roi = grayMat.submat(
+        centerY - roiSize / 2,
+        centerY + roiSize / 2,
+        centerX - roiSize / 2,
+        centerX + roiSize / 2
     )
+
+    // Apply thresholding to detect bright spots (flashlight)
+    val thresholdMat = Mat()
+    Imgproc.threshold(roi, thresholdMat, 200.0, 255.0, Imgproc.THRESH_BINARY)
+
+    // Count non-zero pixels (indicates brightness spikes)
+    val brightPixels = Core.countNonZero(thresholdMat)
+
+    // Return the number of bright pixels as brightness indicator
+    return brightPixels.toDouble()
 }
 
 private suspend fun Context.getCameraProvider(): ProcessCameraProvider =
