@@ -1,36 +1,32 @@
 package com.example.myapplication.composables
 
 import android.content.Context
-import androidx.camera.core.CameraControl
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.Preview
+import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import org.opencv.core.*
+import org.opencv.imgproc.Imgproc
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
-
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import org.opencv.core.CvType
-import org.opencv.core.Mat
-import org.opencv.core.Core
-import org.opencv.imgproc.Imgproc
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Text
-import androidx.compose.ui.graphics.Color
-
 
 @Composable
 fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
@@ -41,24 +37,53 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
     val preview = Preview.Builder().build()
     val previewView = remember { PreviewView(context) }
 
-    // State to hold CameraControl
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
+    var isFullScreen by remember { mutableStateOf(false) }
+    var currentZoom by remember { mutableFloatStateOf(1f) }
+    val maxZoom = 5f  // Adjust this value based on your camera's capabilities
 
-    // State to hold brightness level
-    var brightnessLevel by remember { mutableStateOf(0.0) }
+    // Existing flash detection states
+    var brightnessLevel by remember { mutableDoubleStateOf(0.0) }
+    var flashStartTime by remember { mutableStateOf<Long?>(null) }
+    var flashEndCandidateTime by remember { mutableStateOf<Long?>(null) }
+    var flashDurations by remember { mutableStateOf(listOf<Long>()) }
+    var isFlashOn by remember { mutableStateOf(false) }
 
-    // Set up CameraX
     LaunchedEffect(lensFacing) {
         val cameraProvider = context.getCameraProvider()
         cameraProvider.unbindAll()
 
-        // Add Image Analysis to capture frames
         val imageAnalyzer = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also { analysis ->
                 analysis.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
-                    brightnessLevel = analyzeBrightness(imageProxy)
+                    val brightness = analyzeBrightness(imageProxy)
+                    brightnessLevel = brightness
+
+                    val threshold = 110  // Increased threshold for daylight usage
+                    val debounceDuration = 50L // Debounce time in milliseconds
+                    val currentTime = System.currentTimeMillis()
+
+                    if (brightness > threshold) {
+                        flashEndCandidateTime = null
+                        if (!isFlashOn) {
+                            flashStartTime = currentTime
+                            isFlashOn = true
+                        }
+                    } else {
+                        if (isFlashOn && flashStartTime != null) {
+                            if (flashEndCandidateTime == null) {
+                                flashEndCandidateTime = currentTime
+                            } else if (currentTime - flashEndCandidateTime!! > debounceDuration) {
+                                val duration = currentTime - flashStartTime!!
+                                flashDurations = flashDurations + duration
+                                flashStartTime = null
+                                isFlashOn = false
+                                flashEndCandidateTime = null
+                            }
+                        }
+                    }
                     imageProxy.close()
                 }
             }
@@ -67,31 +92,73 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
             lifecycleOwner,
             CameraSelector.Builder().requireLensFacing(lensFacing).build(),
             preview,
-            imageAnalyzer // Add the analyzer here
+            imageAnalyzer
         )
 
         cameraControl = camera.cameraControl
         preview.setSurfaceProvider(previewView.surfaceProvider)
-
         cameraControl?.let(onCameraControlReady)
     }
 
-    // Display camera preview and brightness
-    Column {
+    // Wrap the camera preview in a Box with gesture detection and full screen toggle
+    Box(
+        modifier = Modifier
+            .then(
+                if (isFullScreen)
+                    Modifier.fillMaxSize()
+                else
+                    Modifier
+                        .fillMaxWidth()
+                        .height(screenHeight / 3)
+            )
+            .pointerInput(Unit) {
+                detectTransformGestures { _, _, zoomChange, _ ->
+                    val newZoom = (currentZoom * zoomChange).coerceIn(1f, maxZoom)
+                    if (newZoom != currentZoom) {
+                        currentZoom = newZoom
+                        cameraControl?.setZoomRatio(newZoom)
+                    }
+                }
+            }
+            .clickable {
+                if (!isFullScreen) {
+                    isFullScreen = true
+                }
+            }
+    ) {
         AndroidView(
             factory = { previewView },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(screenHeight / 3)
-                .offset(y = 140.dp)
+            modifier = Modifier.matchParentSize()
         )
-        Text(
-            text = if (brightnessLevel > 50) "Flash Detected!" else "No Flash Detected",
-            color = Color.White,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        )
+        if (isFullScreen) {
+            // Display an X icon in the top-right corner to exit full screen mode.
+            IconButton(
+                onClick = { isFullScreen = false },
+                modifier = Modifier.align(Alignment.TopEnd)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "Close full screen",
+                    tint = Color.White
+                )
+            }
+        }
+    }
+
+    // Show additional UI (flash detection texts) only when not in full screen mode.
+    if (!isFullScreen) {
+        Column {
+            Text(
+                text = if (isFlashOn) "Flash Detected!" else "No Flash Detected",
+                color = Color.White
+            )
+            Column(modifier = Modifier.padding(8.dp)) {
+                Text(text = "Flash Durations (ms):", color = Color.White)
+                flashDurations.forEach { duration ->
+                    Text(text = "$duration ms", color = Color.White)
+                }
+            }
+        }
     }
 }
 
@@ -99,37 +166,15 @@ private fun analyzeBrightness(imageProxy: ImageProxy): Double {
     val buffer = imageProxy.planes[0].buffer
     val bytes = ByteArray(buffer.remaining())
     buffer.get(bytes)
-
     val width = imageProxy.width
     val height = imageProxy.height
 
-    // Convert to OpenCV Mat (YUV to Gray)
     val mat = Mat(height, width, CvType.CV_8UC1)
     mat.put(0, 0, bytes)
-
     val grayMat = Mat()
     Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_YUV2GRAY_420)
 
-    // Focus on the center of the frame (ROI)
-    val centerX = width / 2
-    val centerY = height / 2
-    val roiSize = 100 // Size of the region to focus on
-    val roi = grayMat.submat(
-        centerY - roiSize / 2,
-        centerY + roiSize / 2,
-        centerX - roiSize / 2,
-        centerX + roiSize / 2
-    )
-
-    // Apply thresholding to detect bright spots (flashlight)
-    val thresholdMat = Mat()
-    Imgproc.threshold(roi, thresholdMat, 200.0, 255.0, Imgproc.THRESH_BINARY)
-
-    // Count non-zero pixels (indicates brightness spikes)
-    val brightPixels = Core.countNonZero(thresholdMat)
-
-    // Return the number of bright pixels as brightness indicator
-    return brightPixels.toDouble()
+    return Core.mean(grayMat).`val`[0]
 }
 
 private suspend fun Context.getCameraProvider(): ProcessCameraProvider =
