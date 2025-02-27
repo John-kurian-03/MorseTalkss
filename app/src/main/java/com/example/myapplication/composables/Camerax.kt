@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -15,7 +16,10 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -23,6 +27,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.*
 import org.opencv.core.*
 import org.opencv.imgproc.Imgproc
 import kotlin.coroutines.resume
@@ -40,14 +45,16 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
     var isFullScreen by remember { mutableStateOf(false) }
     var currentZoom by remember { mutableFloatStateOf(1f) }
-    val maxZoom = 5f  // Adjust this value based on your camera's capabilities
+    val maxZoom = 5f  // Adjust based on camera capabilities
 
-    // Existing flash detection states
+    // Original flash detection states
     var brightnessLevel by remember { mutableDoubleStateOf(0.0) }
     var flashStartTime by remember { mutableStateOf<Long?>(null) }
     var flashEndCandidateTime by remember { mutableStateOf<Long?>(null) }
     var flashDurations by remember { mutableStateOf(listOf<Long>()) }
     var isFlashOn by remember { mutableStateOf(false) }
+    // New: Temporal differential state – holds the previous frame brightness
+    var previousBrightness by remember { mutableDoubleStateOf(0.0) }
 
     LaunchedEffect(lensFacing) {
         val cameraProvider = context.getCameraProvider()
@@ -58,33 +65,42 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
             .build()
             .also { analysis ->
                 analysis.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
-                    val brightness = analyzeBrightness(imageProxy)
-                    brightnessLevel = brightness
+                    CoroutineScope(Dispatchers.Default).launch {
+                        // Get the current brightness from the ROI (with CLAHE enhancement)
+                        val brightness = analyzeBrightness(imageProxy)
+                        brightnessLevel = brightness
 
-                    val threshold = 110  // Increased threshold for daylight usage
-                    val debounceDuration = 50L // Debounce time in milliseconds
-                    val currentTime = System.currentTimeMillis()
+                        // Compute the difference from the previous frame
+                        val brightnessDelta = brightness - previousBrightness
+                        previousBrightness = brightness  // update for the next frame
 
-                    if (brightness > threshold) {
-                        flashEndCandidateTime = null
-                        if (!isFlashOn) {
-                            flashStartTime = currentTime
-                            isFlashOn = true
-                        }
-                    } else {
-                        if (isFlashOn && flashStartTime != null) {
-                            if (flashEndCandidateTime == null) {
-                                flashEndCandidateTime = currentTime
-                            } else if (currentTime - flashEndCandidateTime!! > debounceDuration) {
-                                val duration = currentTime - flashStartTime!!
-                                flashDurations = flashDurations + duration
-                                flashStartTime = null
-                                isFlashOn = false
-                                flashEndCandidateTime = null
+                        // Use temporal differential: if the brightness suddenly spikes by a certain delta, consider it a flash.
+                        val deltaThreshold = 20.0 // Tune this value as needed
+                        val currentTime = System.currentTimeMillis()
+
+                        if (brightnessDelta > deltaThreshold) {
+                            // A rapid increase detected – consider it a flash
+                            flashEndCandidateTime = null
+                            if (!isFlashOn) {
+                                flashStartTime = currentTime
+                                isFlashOn = true
+                            }
+                        } else {
+                            // No significant change; process the end of a flash event using debounce logic
+                            if (isFlashOn && flashStartTime != null) {
+                                if (flashEndCandidateTime == null) {
+                                    flashEndCandidateTime = currentTime
+                                } else if (currentTime - flashEndCandidateTime!! > 50L) {
+                                    val duration = currentTime - flashStartTime!!
+                                    flashDurations = flashDurations + duration
+                                    flashStartTime = null
+                                    isFlashOn = false
+                                    flashEndCandidateTime = null
+                                }
                             }
                         }
+                        imageProxy.close()
                     }
-                    imageProxy.close()
                 }
             }
 
@@ -96,20 +112,20 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
         )
 
         cameraControl = camera.cameraControl
+        cameraControl?.setExposureCompensationIndex(6) // Increase exposure for long-range detection
         preview.setSurfaceProvider(previewView.surfaceProvider)
         cameraControl?.let(onCameraControlReady)
     }
 
-    // Wrap the camera preview in a Box with gesture detection and full screen toggle
+    // Wrap the preview in a Box with gesture detection and full screen toggle
     Box(
         modifier = Modifier
             .then(
                 if (isFullScreen)
                     Modifier.fillMaxSize()
-                else
-                    Modifier
-                        .fillMaxWidth()
-                        .height(screenHeight / 3)
+                else Modifier
+                    .fillMaxWidth()
+                    .height(screenHeight / 3)
             )
             .pointerInput(Unit) {
                 detectTransformGestures { _, _, zoomChange, _ ->
@@ -126,12 +142,23 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
                 }
             }
     ) {
-        AndroidView(
-            factory = { previewView },
-            modifier = Modifier.matchParentSize()
-        )
+        AndroidView(factory = { previewView }, modifier = Modifier.matchParentSize())
+
+        // Draw square ROI bounding box as an overlay
+        Canvas(modifier = Modifier.matchParentSize()) {
+            val roiSize = minOf(size.width, size.height) * 0.5f
+            val roiX = (size.width - roiSize) / 2
+            val roiY = (size.height - roiSize) / 2
+            drawRect(
+                color = Color.Red,
+                topLeft = Offset(roiX, roiY),
+                size = Size(roiSize, roiSize),
+                style = Stroke(width = 3.dp.toPx())
+            )
+        }
+
         if (isFullScreen) {
-            // Display an X icon in the top-right corner to exit full screen mode.
+            // Exit full screen icon
             IconButton(
                 onClick = { isFullScreen = false },
                 modifier = Modifier.align(Alignment.TopEnd)
@@ -145,7 +172,7 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
         }
     }
 
-    // Show additional UI (flash detection texts) only when not in full screen mode.
+    // Original UI: Display flash detection texts and flash durations when not in full screen
     if (!isFullScreen) {
         Column {
             Text(
@@ -163,18 +190,52 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
 }
 
 private fun analyzeBrightness(imageProxy: ImageProxy): Double {
-    val buffer = imageProxy.planes[0].buffer
-    val bytes = ByteArray(buffer.remaining())
-    buffer.get(bytes)
-    val width = imageProxy.width
-    val height = imageProxy.height
+    return try {
+        val buffer = imageProxy.planes[0].buffer
+        val bytes = ByteArray(buffer.remaining())
+        buffer.get(bytes)
+        val width = imageProxy.width
+        val height = imageProxy.height
 
-    val mat = Mat(height, width, CvType.CV_8UC1)
-    mat.put(0, 0, bytes)
-    val grayMat = Mat()
-    Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_YUV2GRAY_420)
+        val mat = Mat(height, width, CvType.CV_8UC1)
+        mat.put(0, 0, bytes)
 
-    return Core.mean(grayMat).`val`[0]
+        val grayMat = Mat()
+        Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_YUV2GRAY_420)
+
+        // Define a square ROI using the smaller dimension to ensure it stays in bounds
+        val roiSize = minOf(width, height) / 2
+        val roiX = (width - roiSize) / 2
+        val roiY = (height - roiSize) / 2
+
+        // Check bounds – if the ROI is out of bounds, fallback to using the entire frame
+        if (roiX < 0 || roiY < 0 || roiX + roiSize > grayMat.cols() || roiY + roiSize > grayMat.rows()) {
+            val brightness = Core.mean(grayMat).`val`[0]
+            grayMat.release()
+            mat.release()
+            return brightness
+        }
+
+        val roi = grayMat.submat(Rect(roiX, roiY, roiSize, roiSize))
+
+        // Apply CLAHE for better contrast in low light
+        val clahe = Imgproc.createCLAHE(3.0)
+        val enhancedRoi = Mat()
+        clahe.apply(roi, enhancedRoi)
+        // Note: clahe.release() is not available in OpenCV 4.9.0 for Android
+
+        val brightness = Core.mean(enhancedRoi).`val`[0]
+
+        // Clean up Mats
+        roi.release()
+        enhancedRoi.release()
+        grayMat.release()
+        mat.release()
+
+        brightness
+    } catch (e: Exception) {
+        0.0
+    }
 }
 
 private suspend fun Context.getCameraProvider(): ProcessCameraProvider =
