@@ -47,13 +47,13 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
     var currentZoom by remember { mutableFloatStateOf(1f) }
     val maxZoom = 5f  // Adjust based on camera capabilities
 
-    // Original flash detection states
+    // Flash detection states
     var brightnessLevel by remember { mutableDoubleStateOf(0.0) }
     var flashStartTime by remember { mutableStateOf<Long?>(null) }
     var flashEndCandidateTime by remember { mutableStateOf<Long?>(null) }
     var flashDurations by remember { mutableStateOf(listOf<Long>()) }
     var isFlashOn by remember { mutableStateOf(false) }
-    // New: Temporal differential state – holds the previous frame brightness
+    // Temporal differential state – holds the previous frame ROI brightness
     var previousBrightness by remember { mutableDoubleStateOf(0.0) }
 
     LaunchedEffect(lensFacing) {
@@ -66,27 +66,24 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
             .also { analysis ->
                 analysis.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
                     CoroutineScope(Dispatchers.Default).launch {
-                        // Get the current brightness from the ROI (with CLAHE enhancement)
+                        // Use the new ROI (smaller, to simulate digital zoom) + CLAHE enhanced brightness analysis
                         val brightness = analyzeBrightness(imageProxy)
                         brightnessLevel = brightness
 
-                        // Compute the difference from the previous frame
-                        val brightnessDelta = brightness - previousBrightness
-                        previousBrightness = brightness  // update for the next frame
+                        // Compute temporal differential
+                        val temporalDelta = brightness - previousBrightness
+                        previousBrightness = brightness
 
-                        // Use temporal differential: if the brightness suddenly spikes by a certain delta, consider it a flash.
                         val deltaThreshold = 20.0 // Tune this value as needed
                         val currentTime = System.currentTimeMillis()
 
-                        if (brightnessDelta > deltaThreshold) {
-                            // A rapid increase detected – consider it a flash
+                        if (temporalDelta > deltaThreshold) {
                             flashEndCandidateTime = null
                             if (!isFlashOn) {
                                 flashStartTime = currentTime
                                 isFlashOn = true
                             }
                         } else {
-                            // No significant change; process the end of a flash event using debounce logic
                             if (isFlashOn && flashStartTime != null) {
                                 if (flashEndCandidateTime == null) {
                                     flashEndCandidateTime = currentTime
@@ -112,7 +109,8 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
         )
 
         cameraControl = camera.cameraControl
-        cameraControl?.setExposureCompensationIndex(6) // Increase exposure for long-range detection
+        // Set a default zoom ratio to digitally zoom in (helpful for detecting distant flash)
+        cameraControl?.setZoomRatio(1.5f)
         preview.setSurfaceProvider(previewView.surfaceProvider)
         cameraControl?.let(onCameraControlReady)
     }
@@ -144,9 +142,9 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
     ) {
         AndroidView(factory = { previewView }, modifier = Modifier.matchParentSize())
 
-        // Draw square ROI bounding box as an overlay
+        // Draw square ROI bounding box as an overlay (using the new smaller ROI)
         Canvas(modifier = Modifier.matchParentSize()) {
-            val roiSize = minOf(size.width, size.height) * 0.5f
+            val roiSize = minOf(size.width, size.height) * 0.33f // 33% of the smaller dimension
             val roiX = (size.width - roiSize) / 2
             val roiY = (size.height - roiSize) / 2
             drawRect(
@@ -172,7 +170,7 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
         }
     }
 
-    // Original UI: Display flash detection texts and flash durations when not in full screen
+    // Display flash detection texts and flash durations (original UI)
     if (!isFullScreen) {
         Column {
             Text(
@@ -203,12 +201,11 @@ private fun analyzeBrightness(imageProxy: ImageProxy): Double {
         val grayMat = Mat()
         Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_YUV2GRAY_420)
 
-        // Define a square ROI using the smaller dimension to ensure it stays in bounds
-        val roiSize = minOf(width, height) / 2
+        // Define a smaller square ROI to simulate digital zoom
+        val roiSize = minOf(width, height) / 3  // Smaller than before
         val roiX = (width - roiSize) / 2
         val roiY = (height - roiSize) / 2
 
-        // Check bounds – if the ROI is out of bounds, fallback to using the entire frame
         if (roiX < 0 || roiY < 0 || roiX + roiSize > grayMat.cols() || roiY + roiSize > grayMat.rows()) {
             val brightness = Core.mean(grayMat).`val`[0]
             grayMat.release()
@@ -226,7 +223,6 @@ private fun analyzeBrightness(imageProxy: ImageProxy): Double {
 
         val brightness = Core.mean(enhancedRoi).`val`[0]
 
-        // Clean up Mats
         roi.release()
         enhancedRoi.release()
         grayMat.release()

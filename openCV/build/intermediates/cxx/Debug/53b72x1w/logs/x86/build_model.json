@@ -156,7 +156,7 @@
         "rootBuildGradleFolder": "C:\\Users\\jonat\\Music\\MorseTalk",
         "sdkFolder": "C:\\Users\\jonat\\AppData\\Local\\Android\\Sdk",
         "isBuildOnlyTargetAbiEnabled": true,
-        "ideBuildTargetAbi": "x86",
+        "ideBuildTargetAbi": "x86,armeabi-v7a,armeabi",
         "isCmakeBuildCohabitationEnabled": false,
         "isPrefabEnabled": false
       },
