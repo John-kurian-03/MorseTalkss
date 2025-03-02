@@ -44,11 +44,17 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
 
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
     var isFullScreen by remember { mutableStateOf(false) }
-    var currentZoom by remember { mutableFloatStateOf(1f) }
-    val maxZoom = 5f  // Adjust based on camera capabilities
+    var currentZoom by remember { mutableFloatStateOf(3.0f) }
+    val maxZoom = 6f  // Adjust based on camera capabilities
+
+    // ROI size
+    var roiX by remember { mutableFloatStateOf(0f) }
+    var roiY by remember { mutableFloatStateOf(0f) }
+    var roiSize by remember { mutableFloatStateOf(0f) }
+
 
     // Flash detection states
-    var brightnessLevel by remember { mutableDoubleStateOf(0.0) }
+    var brightness by remember { mutableDoubleStateOf(0.0) }
     var flashStartTime by remember { mutableStateOf<Long?>(null) }
     var flashEndCandidateTime by remember { mutableStateOf<Long?>(null) }
     var flashDurations by remember { mutableStateOf(listOf<Long>()) }
@@ -67,14 +73,18 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
                 analysis.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
                     CoroutineScope(Dispatchers.Default).launch {
                         // Use the new ROI (smaller, to simulate digital zoom) + CLAHE enhanced brightness analysis
-                        val brightness = analyzeBrightness(imageProxy)
-                        brightnessLevel = brightness
+                        val result = analyzeBrightness(imageProxy)
+
+                        brightness = result.brightness
+                        roiX = result.roiX.toFloat()
+                        roiY = result.roiY.toFloat()
+                        roiSize = result.roiSize.toFloat()
 
                         // Compute temporal differential
                         val temporalDelta = brightness - previousBrightness
                         previousBrightness = brightness
 
-                        val deltaThreshold = 20.0 // Tune this value as needed
+                        val deltaThreshold = 15.0 // Tune this value as needed
                         val currentTime = System.currentTimeMillis()
 
                         if (temporalDelta > deltaThreshold) {
@@ -110,7 +120,7 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
 
         cameraControl = camera.cameraControl
         // Set a default zoom ratio to digitally zoom in (helpful for detecting distant flash)
-        cameraControl?.setZoomRatio(1.5f)
+        cameraControl?.setZoomRatio(currentZoom)
         preview.setSurfaceProvider(previewView.surfaceProvider)
         cameraControl?.let(onCameraControlReady)
     }
@@ -144,9 +154,6 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
 
         // Draw square ROI bounding box as an overlay (using the new smaller ROI)
         Canvas(modifier = Modifier.matchParentSize()) {
-            val roiSize = minOf(size.width, size.height) * 0.33f // 33% of the smaller dimension
-            val roiX = (size.width - roiSize) / 2
-            val roiY = (size.height - roiSize) / 2
             drawRect(
                 color = Color.Red,
                 topLeft = Offset(roiX, roiY),
@@ -177,7 +184,7 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
                 text = if (isFlashOn) "Flash Detected!" else "No Flash Detected",
                 color = Color.White
             )
-            Column(modifier = Modifier.padding(8.dp)) {
+            Row(modifier = Modifier.padding(8.dp)) {
                 Text(text = "Flash Durations (ms):", color = Color.White)
                 flashDurations.forEach { duration ->
                     Text(text = "$duration ms", color = Color.White)
@@ -186,8 +193,8 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
         }
     }
 }
-
-private fun analyzeBrightness(imageProxy: ImageProxy): Double {
+data class BrightnessResult(val brightness: Double, val roiX: Int, val roiY: Int, val roiSize: Int)
+private fun analyzeBrightness(imageProxy: ImageProxy): BrightnessResult  {
     return try {
         val buffer = imageProxy.planes[0].buffer
         val bytes = ByteArray(buffer.remaining())
@@ -201,36 +208,36 @@ private fun analyzeBrightness(imageProxy: ImageProxy): Double {
         val grayMat = Mat()
         Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_YUV2GRAY_420)
 
-        // Define a smaller square ROI to simulate digital zoom
-        val roiSize = minOf(width, height) / 3  // Smaller than before
+
+        // Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to enhance contrast
+        val clahe = Imgproc.createCLAHE(3.0)
+        val enhancedMat = Mat()
+        clahe.apply(grayMat, enhancedMat)
+
+        // Define a smaller square ROI to improve long-distance flash detection
+        val roiSize = minOf(width, height) / 3   // 50% of the smaller dimension
         val roiX = (width - roiSize) / 2
         val roiY = (height - roiSize) / 2
 
-        if (roiX < 0 || roiY < 0 || roiX + roiSize > grayMat.cols() || roiY + roiSize > grayMat.rows()) {
-            val brightness = Core.mean(grayMat).`val`[0]
+        if (roiX < 0 || roiY < 0 || roiX + roiSize > enhancedMat.cols() || roiY + roiSize > enhancedMat.rows()) {
+            val brightness = Core.mean(enhancedMat).`val`[0]
+            enhancedMat.release()
             grayMat.release()
             mat.release()
-            return brightness
+            return BrightnessResult(brightness, 0, 0, 0)
         }
 
-        val roi = grayMat.submat(Rect(roiX, roiY, roiSize, roiSize))
-
-        // Apply CLAHE for better contrast in low light
-        val clahe = Imgproc.createCLAHE(3.0)
-        val enhancedRoi = Mat()
-        clahe.apply(roi, enhancedRoi)
-        // Note: clahe.release() is not available in OpenCV 4.9.0 for Android
-
-        val brightness = Core.mean(enhancedRoi).`val`[0]
+        val roi = enhancedMat.submat(Rect(roiX, roiY, roiSize, roiSize))
+        val brightness = Core.mean(roi).`val`[0]
 
         roi.release()
-        enhancedRoi.release()
+        enhancedMat.release()
         grayMat.release()
         mat.release()
 
-        brightness
+        BrightnessResult(brightness, roiX, roiY, roiSize)
     } catch (e: Exception) {
-        0.0
+        BrightnessResult(0.0, 0, 0, 0)
     }
 }
 
