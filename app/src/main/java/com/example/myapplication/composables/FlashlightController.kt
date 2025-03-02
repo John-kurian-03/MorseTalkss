@@ -43,8 +43,8 @@ class FlashlightController(private val context: Context) {
             for (char in morseCode) {
                 when (char) {
                     '.' -> blink(100)
-                    '-' -> blink(400)
-                    ' ' -> delay(700)
+                    '-' -> blink(500)
+                    ' ' -> delay(800)
                 }
             }
         }

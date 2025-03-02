@@ -112,12 +112,17 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// A simple data class for chat messages
+data class ChatMessage(val text: String, val isSent: Boolean)
+
 @Composable
 fun HomeScreen(onRequestPermission: () -> Unit) {
     var isCameraPreviewVisible by remember { mutableStateOf(false) }
-    var text by remember { mutableStateOf("") }
+    var inputText by remember { mutableStateOf("") }
+    // Chat messages list: true means message sent by user; false means received (decoded reply)
+    var messages by remember { mutableStateOf(listOf<ChatMessage>()) }
+
     val context = LocalContext.current
-    var messages by remember { mutableStateOf(listOf<String>()) }
 
     Column(
         modifier = Modifier
@@ -133,10 +138,15 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
         )
 
         if (isCameraPreviewVisible) {
-            CameraPreviewScreen { cameraControl ->
-                // Handle camera control here if needed
-                Log.d("HomeScreen", "CameraControl received: $cameraControl")
-            }
+            CameraPreviewScreen(
+                onCameraControlReady = { cameraControl ->
+                    // Handle camera control if needed
+                },
+                onDecodedMessage = { decoded ->
+                    // Add the decoded message as a received message
+                    messages = messages + ChatMessage(decoded, isSent = false)
+                }
+            )
         }
 
         Box(
@@ -157,14 +167,27 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
                             .fillMaxWidth()
                             .padding(vertical = 8.dp)
                     ) {
-                        Text(
-                            text = message,
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .background(Color.Green, shape = RoundedCornerShape(8.dp))
-                                .padding(16.dp),
-                            color = Color.White
-                        )
+                        if (message.isSent) {
+                            // User-sent message: align right
+                            Text(
+                                text = message.text,
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .background(Color.Green, shape = RoundedCornerShape(8.dp))
+                                    .padding(16.dp),
+                                color = Color.White
+                            )
+                        } else {
+                            // Received message (decoded reply): align left
+                            Text(
+                                text = message.text,
+                                modifier = Modifier
+                                    .align(Alignment.CenterStart)
+                                    .background(Color.LightGray, shape = RoundedCornerShape(8.dp))
+                                    .padding(16.dp),
+                                color = Color.Black
+                            )
+                        }
                     }
                 }
             }
@@ -177,9 +200,9 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
         modifier = Modifier.padding(bottom = 75.dp)
     ) {
         OutlinedTextField(
-            value = text,
+            value = inputText,
             modifier = Modifier.fillMaxWidth(),
-            onValueChange = { text = it },
+            onValueChange = { inputText = it },
             label = { Text("Enter message", color = Color.White) }
         )
     }
@@ -191,13 +214,11 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
     ) {
         Button(
             onClick = {
-                if (text.isNotEmpty()) {
-                    val textToMorse = TextToMorse()
-                    val morseCode = textToMorse.translateToMorse(text)
-                    val flashlightController = FlashlightController(context)
-                    flashlightController.transmitMorseCode(morseCode)
-                    messages = messages + text
-                    text = ""
+                if (inputText.isNotEmpty()) {
+                    // For transmitted messages, you already use TextToMorse and FlashlightController.
+                    // Here we simply add the message to the chat.
+                    messages = messages + ChatMessage(inputText, isSent = true)
+                    inputText = ""
                 }
             },
             colors = ButtonDefaults.buttonColors(containerColor = Color.White),
@@ -212,11 +233,9 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
         Button(
             onClick = {
                 if (!isCameraPreviewVisible) {
-                    // Request camera permission and show preview
                     isCameraPreviewVisible = true
                     onRequestPermission()
                 } else {
-                    // Hide camera preview when clicked again
                     isCameraPreviewVisible = false
                 }
             },
@@ -236,7 +255,6 @@ fun HomeScreen(onRequestPermission: () -> Unit) {
         }
     }
 }
-
 
 
 
