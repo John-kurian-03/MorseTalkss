@@ -84,7 +84,7 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
                         val temporalDelta = brightness - previousBrightness
                         previousBrightness = brightness
 
-                        val deltaThreshold = 15.0 // Tune this value as needed
+                        val deltaThreshold = 20.0 // Tune this value as needed
                         val currentTime = System.currentTimeMillis()
 
                         if (temporalDelta > deltaThreshold) {
@@ -184,7 +184,7 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
                 text = if (isFlashOn) "Flash Detected!" else "No Flash Detected",
                 color = Color.White
             )
-            Row(modifier = Modifier.padding(8.dp)) {
+            Column(modifier = Modifier.padding(8.dp)) {
                 Text(text = "Flash Durations (ms):", color = Color.White)
                 flashDurations.forEach { duration ->
                     Text(text = "$duration ms", color = Color.White)
@@ -193,7 +193,9 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
         }
     }
 }
+
 data class BrightnessResult(val brightness: Double, val roiX: Int, val roiY: Int, val roiSize: Int)
+
 private fun analyzeBrightness(imageProxy: ImageProxy): BrightnessResult  {
     return try {
         val buffer = imageProxy.planes[0].buffer
@@ -215,7 +217,7 @@ private fun analyzeBrightness(imageProxy: ImageProxy): BrightnessResult  {
         clahe.apply(grayMat, enhancedMat)
 
         // Define a smaller square ROI to improve long-distance flash detection
-        val roiSize = minOf(width, height) / 3   // 50% of the smaller dimension
+        val roiSize = minOf(width, height) / 4   // 50% of the smaller dimension
         val roiX = (width - roiSize) / 2
         val roiY = (height - roiSize) / 2
 
