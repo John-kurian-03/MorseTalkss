@@ -30,17 +30,11 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 import org.opencv.core.*
 import org.opencv.imgproc.Imgproc
-import kotlin.math.min
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
-import com.example.myapplication.composables.decodeMorse
-import com.example.myapplication.composables.morseToText
 
 @Composable
-fun CameraPreviewScreen(
-    onCameraControlReady: (CameraControl) -> Unit,
-    onDecodedMessage: (String) -> Unit
-) {
+fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
     val screenHeight = LocalConfiguration.current.screenHeightDp.dp
     val lensFacing = CameraSelector.LENS_FACING_BACK
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -53,17 +47,14 @@ fun CameraPreviewScreen(
     var currentZoom by remember { mutableFloatStateOf(1f) }
     val maxZoom = 5f  // Adjust based on camera capabilities
 
-    // Detection states
+    // Flash detection states
     var brightnessLevel by remember { mutableDoubleStateOf(0.0) }
+    var flashStartTime by remember { mutableStateOf<Long?>(null) }
+    var flashEndCandidateTime by remember { mutableStateOf<Long?>(null) }
     var flashDurations by remember { mutableStateOf(listOf<Long>()) }
-    var gapDurations by remember { mutableStateOf(listOf<Long>()) }
     var isFlashOn by remember { mutableStateOf(false) }
+    // Temporal differential state – holds the previous frame ROI brightness
     var previousBrightness by remember { mutableDoubleStateOf(0.0) }
-    var lastFlashEndTime by remember { mutableStateOf<Long?>(null) }
-
-    // Remove the in-screen decoded message display states (they will be sent back to HomeScreen)
-    // var morseText by remember { mutableStateOf("") }
-    // var decodedMessage by remember { mutableStateOf("") }
 
     LaunchedEffect(lensFacing) {
         val cameraProvider = context.getCameraProvider()
@@ -75,7 +66,7 @@ fun CameraPreviewScreen(
             .also { analysis ->
                 analysis.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
                     CoroutineScope(Dispatchers.Default).launch {
-                        // Use ROI-based brightness analysis (unchanged)
+                        // Use the new ROI (smaller, to simulate digital zoom) + CLAHE enhanced brightness analysis
                         val brightness = analyzeBrightness(imageProxy)
                         brightnessLevel = brightness
 
@@ -83,25 +74,26 @@ fun CameraPreviewScreen(
                         val temporalDelta = brightness - previousBrightness
                         previousBrightness = brightness
 
-                        val deltaThreshold = 20.0 // Tune as needed
+                        val deltaThreshold = 20.0 // Tune this value as needed
                         val currentTime = System.currentTimeMillis()
 
-                        if (brightness > 80 && temporalDelta > deltaThreshold) {
-                            if (!isFlashOn && lastFlashEndTime != null) {
-                                val gap = currentTime - lastFlashEndTime!!
-                                gapDurations = gapDurations + gap
-                            }
+                        if (temporalDelta > deltaThreshold) {
+                            flashEndCandidateTime = null
                             if (!isFlashOn) {
+                                flashStartTime = currentTime
                                 isFlashOn = true
                             }
                         } else {
-                            if (isFlashOn) {
-                                val flashDuration = currentTime - (lastFlashEndTime ?: currentTime)
-                                flashDurations = flashDurations + flashDuration
-                                isFlashOn = false
-                                lastFlashEndTime = currentTime
-                            } else {
-                                lastFlashEndTime = currentTime
+                            if (isFlashOn && flashStartTime != null) {
+                                if (flashEndCandidateTime == null) {
+                                    flashEndCandidateTime = currentTime
+                                } else if (currentTime - flashEndCandidateTime!! > 50L) {
+                                    val duration = currentTime - flashStartTime!!
+                                    flashDurations = flashDurations + duration
+                                    flashStartTime = null
+                                    isFlashOn = false
+                                    flashEndCandidateTime = null
+                                }
                             }
                         }
                         imageProxy.close()
@@ -117,28 +109,13 @@ fun CameraPreviewScreen(
         )
 
         cameraControl = camera.cameraControl
+        // Set a default zoom ratio to digitally zoom in (helpful for detecting distant flash)
         cameraControl?.setZoomRatio(1.5f)
         preview.setSurfaceProvider(previewView.surfaceProvider)
         cameraControl?.let(onCameraControlReady)
     }
 
-    // When there is a long gap (indicating end of a Morse letter/word), decode and pass the decoded message
-    LaunchedEffect(gapDurations, flashDurations) {
-        if (flashDurations.isNotEmpty() && gapDurations.isNotEmpty()) {
-            val lastGap = gapDurations.lastOrNull() ?: 0L
-            if (lastGap > 1500L) {  // Adjust threshold as needed
-                val morseText = decodeMorse(flashDurations, gapDurations)
-                val decodedMessage = morseToText(morseText)
-                // Pass the decoded message to the parent
-                onDecodedMessage(decodedMessage)
-                // Clear the lists for the next message
-                flashDurations = listOf()
-                gapDurations = listOf()
-            }
-        }
-    }
-
-    // UI rendering (same as before, but without showing the decoded text)
+    // Wrap the preview in a Box with gesture detection and full screen toggle
     Box(
         modifier = Modifier
             .then(
@@ -165,9 +142,9 @@ fun CameraPreviewScreen(
     ) {
         AndroidView(factory = { previewView }, modifier = Modifier.matchParentSize())
 
-        // Fixed square ROI overlay
+        // Draw square ROI bounding box as an overlay (using the new smaller ROI)
         Canvas(modifier = Modifier.matchParentSize()) {
-            val roiSize = minOf(size.width, size.height) * 0.33f
+            val roiSize = minOf(size.width, size.height) * 0.33f // 33% of the smaller dimension
             val roiX = (size.width - roiSize) / 2
             val roiY = (size.height - roiSize) / 2
             drawRect(
@@ -179,6 +156,7 @@ fun CameraPreviewScreen(
         }
 
         if (isFullScreen) {
+            // Exit full screen icon
             IconButton(
                 onClick = { isFullScreen = false },
                 modifier = Modifier.align(Alignment.TopEnd)
@@ -191,9 +169,24 @@ fun CameraPreviewScreen(
             }
         }
     }
+
+    // Display flash detection texts and flash durations (original UI)
+    if (!isFullScreen) {
+        Column {
+            Text(
+                text = if (isFlashOn) "Flash Detected!" else "No Flash Detected",
+                color = Color.White
+            )
+            Column(modifier = Modifier.padding(8.dp)) {
+                Text(text = "Flash Durations (ms):", color = Color.White)
+                flashDurations.forEach { duration ->
+                    Text(text = "$duration ms", color = Color.White)
+                }
+            }
+        }
+    }
 }
 
-// Uses a fixed square ROI for brightness analysis
 private fun analyzeBrightness(imageProxy: ImageProxy): Double {
     return try {
         val buffer = imageProxy.planes[0].buffer
@@ -208,7 +201,8 @@ private fun analyzeBrightness(imageProxy: ImageProxy): Double {
         val grayMat = Mat()
         Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_YUV2GRAY_420)
 
-        val roiSize = minOf(width, height) / 3
+        // Define a smaller square ROI to simulate digital zoom
+        val roiSize = minOf(width, height) / 3  // Smaller than before
         val roiX = (width - roiSize) / 2
         val roiY = (height - roiSize) / 2
 
@@ -221,11 +215,11 @@ private fun analyzeBrightness(imageProxy: ImageProxy): Double {
 
         val roi = grayMat.submat(Rect(roiX, roiY, roiSize, roiSize))
 
-        // Apply CLAHE for better contrast
+        // Apply CLAHE for better contrast in low light
         val clahe = Imgproc.createCLAHE(3.0)
         val enhancedRoi = Mat()
         clahe.apply(roi, enhancedRoi)
-        // Note: clahe.release() not available in OpenCV 4.9.0 for Android
+        // Note: clahe.release() is not available in OpenCV 4.9.0 for Android
 
         val brightness = Core.mean(enhancedRoi).`val`[0]
 
