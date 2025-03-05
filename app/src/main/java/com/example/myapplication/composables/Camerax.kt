@@ -44,7 +44,7 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
 
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
     var isFullScreen by remember { mutableStateOf(false) }
-    var currentZoom by remember { mutableFloatStateOf(3.0f) }
+    var currentZoom by remember { mutableFloatStateOf(1.5f) }
     val maxZoom = 6f  // Adjust based on camera capabilities
 
     // ROI size
@@ -181,7 +181,7 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
     if (!isFullScreen) {
         Column {
             Text(
-                text = if (isFlashOn) "Flash Detected!" else "No Flash Detected",
+                text = if (isFlashOn) "Flash Detected!" else "No Flash Detected (new)",
                 color = Color.White
             )
             Column(modifier = Modifier.padding(8.dp)) {
@@ -196,7 +196,7 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
 
 data class BrightnessResult(val brightness: Double, val roiX: Int, val roiY: Int, val roiSize: Int)
 
-private fun analyzeBrightness(imageProxy: ImageProxy): BrightnessResult  {
+private fun analyzeBrightness(imageProxy: ImageProxy): BrightnessResult {
     return try {
         val buffer = imageProxy.planes[0].buffer
         val bytes = ByteArray(buffer.remaining())
@@ -210,14 +210,16 @@ private fun analyzeBrightness(imageProxy: ImageProxy): BrightnessResult  {
         val grayMat = Mat()
         Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_YUV2GRAY_420)
 
-
-        // Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to enhance contrast
+        // Apply CLAHE for contrast enhancement
         val clahe = Imgproc.createCLAHE(3.0)
         val enhancedMat = Mat()
         clahe.apply(grayMat, enhancedMat)
 
-        // Define a smaller square ROI to improve long-distance flash detection
-        val roiSize = minOf(width, height) / 4   // 50% of the smaller dimension
+        // Apply Gaussian Blur to reduce noise
+        Imgproc.GaussianBlur(enhancedMat, enhancedMat, Size(5.0, 5.0), 0.0)
+
+        // Define the larger ROI
+        val roiSize = minOf(width, height) / 3
         val roiX = (width - roiSize) / 2
         val roiY = (height - roiSize) / 2
 
@@ -226,18 +228,38 @@ private fun analyzeBrightness(imageProxy: ImageProxy): BrightnessResult  {
             enhancedMat.release()
             grayMat.release()
             mat.release()
-            return BrightnessResult(brightness, 0, 0, 0)
+            return BrightnessResult(brightness, roiX, roiY, roiSize)
         }
 
         val roi = enhancedMat.submat(Rect(roiX, roiY, roiSize, roiSize))
-        val brightness = Core.mean(roi).`val`[0]
 
+        // Find the brightest pixel in the ROI
+        val minMax = Core.minMaxLoc(roi)
+        val maxBrightness = minMax.maxVal
+
+        // Convert to 1D array
+        val roiPixels = ByteArray(roi.total().toInt())
+        roi.get(0, 0, roiPixels)
+
+        // Define threshold (e.g., 70% of max brightness)
+        val minBrightnessThreshold = maxBrightness * 0.7
+
+        // Filter pixels above threshold and compute mean
+        val brightPixels = roiPixels.filter { it.toInt() and 0xFF > minBrightnessThreshold }
+        val avgBrightness = if (brightPixels.isNotEmpty()) {
+            brightPixels.sumOf { it.toInt() and 0xFF } / brightPixels.size.toDouble()
+        } else {
+            0.0
+        }
+
+        // Release resources
         roi.release()
         enhancedMat.release()
         grayMat.release()
         mat.release()
 
-        BrightnessResult(brightness, roiX, roiY, roiSize)
+        // Return brightness and larger ROI coordinates
+        BrightnessResult(avgBrightness, roiX, roiY, roiSize)
     } catch (e: Exception) {
         BrightnessResult(0.0, 0, 0, 0)
     }
