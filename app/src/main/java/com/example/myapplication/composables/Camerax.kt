@@ -1,10 +1,18 @@
 package com.example.myapplication.composables
 
 import android.content.Context
+import android.hardware.camera2.CaptureRequest
+import android.util.Log
+import androidx.annotation.OptIn
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+//import android.graphics.Rect
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -12,6 +20,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Slider
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,12 +36,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
-import org.opencv.core.*
 import org.opencv.imgproc.Imgproc
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 import androidx.compose.material3.Text
+import kotlin.math.abs
+import androidx.compose.ui.graphics.Brush
+import org.opencv.core.Mat.*
+import org.opencv.core.*
+import kotlin.math.max
 
+
+@OptIn(ExperimentalCamera2Interop::class)
 @Composable
 fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
     val lensFacing = CameraSelector.LENS_FACING_BACK
@@ -40,64 +55,93 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
     val context = LocalContext.current
     val preview = Preview.Builder().build()
     val previewView = remember { PreviewView(context) }
-
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
-    var currentZoom by remember { mutableFloatStateOf(1.5f) }
 
+    // Zoom
+    var currentZoom by remember { mutableFloatStateOf(1.5f) }
     val maxZoom = 6f  // Adjust based on camera capabilities
+
     // ROI size
     var roiX by remember { mutableFloatStateOf(0f) }
     var roiY by remember { mutableFloatStateOf(0f) }
     var roiSize by remember { mutableFloatStateOf(0f) }
+    var roiSizeRatio by remember { mutableIntStateOf(3) } // increase to make ROI smaller
 
     var brightness by remember { mutableDoubleStateOf(0.0) }
     var flashStartTime by remember { mutableStateOf<Long?>(null) }
+    var flashEndTime by remember { mutableStateOf<Long?>(null) }
     var flashEndCandidateTime by remember { mutableStateOf<Long?>(null) }
     var flashDurations by remember { mutableStateOf(listOf<Long>()) }
     var isFlashOn by remember { mutableStateOf(false) }
     var previousBrightness by remember { mutableDoubleStateOf(0.0) }
 
+    var maxTemporalDelta by remember { mutableDoubleStateOf(0.0) }
+
     LaunchedEffect(lensFacing) {
         val cameraProvider = context.getCameraProvider()
         cameraProvider.unbindAll()
-
         val imageAnalyzer = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also { analysis ->
                 analysis.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
                     CoroutineScope(Dispatchers.Default).launch {
-                        val result = analyzeBrightness(imageProxy)
+                        val result = analyzeBrightness(imageProxy, roiSizeRatio)
                         brightness = result.brightness
                         roiX = result.roiX.toFloat()
                         roiY = result.roiY.toFloat()
                         roiSize = result.roiSize.toFloat()
 
+                        if(previousBrightness == 0.0){
+                            previousBrightness = brightness
+                        }
+
+                        Log.d("MyTag", "b: $brightness")
+
                         val temporalDelta = brightness - previousBrightness
+                        maxTemporalDelta = max(maxTemporalDelta,temporalDelta)
+
+                        Log.d("MyTag", "temporalDelta: $temporalDelta")
+                        Log.d("MyTag", "pb: $previousBrightness")
+
                         previousBrightness = brightness
 
                         val deltaThreshold = 20.0
-                        val currentTime = System.currentTimeMillis()
+                        //val currentTime = System.currentTimeMillis()
 
-                        if (temporalDelta > deltaThreshold) {
-                            flashEndCandidateTime = null
-                            if (!isFlashOn) {
-                                flashStartTime = currentTime
-                                isFlashOn = true
-                            }
-                        } else {
-                            if (isFlashOn && flashStartTime != null) {
-                                if (flashEndCandidateTime == null) {
-                                    flashEndCandidateTime = currentTime
-                                } else if (currentTime - flashEndCandidateTime!! > 50L) {
-                                    val duration = currentTime - flashStartTime!!
-                                    flashDurations = flashDurations + duration
-                                    flashStartTime = null
-                                    isFlashOn = false
-                                    flashEndCandidateTime = null
+                        Log.d("MyTag", "maxTemporal: $maxTemporalDelta ")
+
+                        Log.d("MyTag","$flashDurations")
+                        if (abs(temporalDelta) > deltaThreshold) {
+                            val currentTime = System.currentTimeMillis()
+
+
+                            if (temporalDelta > deltaThreshold && !isFlashOn) {
+                                // Ensure enough time has passed since last flash-off to prevent false triggers
+                                flashEndTime?.let { endTime ->
+                                    val offDuration = currentTime - endTime
+                                    if (offDuration > 200) { // Only register a new flash if off duration is significant
+                                        flashDurations = flashDurations + (-offDuration)
+                                        flashStartTime = currentTime
+                                        isFlashOn = true
+                                    }
+                                } ?: run { // If there was no previous flash-off, register normally
+                                    flashStartTime = currentTime
+                                    isFlashOn = true
                                 }
+
+                            } else if (temporalDelta < -deltaThreshold && isFlashOn) {
+                                // Flash ends
+                                flashStartTime?.let { startTime ->
+                                    val onDuration = currentTime - startTime
+                                    flashDurations = flashDurations + onDuration
+                                }
+
+                                flashEndTime = currentTime
+                                isFlashOn = false
                             }
                         }
+
                         imageProxy.close()
                     }
                 }
@@ -111,6 +155,26 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
         )
 
         cameraControl = camera.cameraControl
+        camera.cameraInfo.exposureState?.let { exposureState ->
+            Log.d("CameraExposure", "Exposure compensation range: ${exposureState.exposureCompensationRange}")
+            Log.d("CameraExposure", "Current exposure compensation: ${exposureState.exposureCompensationIndex}")
+
+            val minExposure = exposureState.exposureCompensationRange.lower
+            val maxExposure = exposureState.exposureCompensationRange.upper
+
+            val targetExposure = 0 // Adjust this value if needed
+            val clampedExposure = targetExposure.coerceIn(minExposure, maxExposure)
+
+            cameraControl?.setExposureCompensationIndex(clampedExposure)
+        }
+        cameraControl?.let {
+            val camera2Control = Camera2CameraControl.from(it)
+            camera2Control.captureRequestOptions = CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, 100) // Lock ISO to 100
+                .build()
+        }
+
+
         cameraControl?.setZoomRatio(currentZoom)
         preview.setSurfaceProvider(previewView.surfaceProvider)
         cameraControl?.let(onCameraControlReady)
@@ -129,7 +193,8 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
                     }
                 }
             }
-    ) {
+    )
+    {
         AndroidView(factory = { previewView }, modifier = Modifier.matchParentSize())
 
         Canvas(modifier = Modifier.matchParentSize()) {
@@ -148,17 +213,21 @@ fun CameraPreviewScreen(onCameraControlReady: (CameraControl) -> Unit) {
             text = if (isFlashOn) "Flash Detected!" else "No Flash Detected (new)",
             color = Color.White
         )
+        Text("Brightness: $brightness")
         Column(modifier = Modifier.padding(8.dp)) {
             Text(text = "Flash Durations (ms):", color = Color.White)
             flashDurations.forEach { duration ->
                 Text(text = "$duration ms", color = Color.White)
             }
         }
+
     }
+
 }
 
+
 data class BrightnessResult(val brightness: Double, val roiX: Int, val roiY: Int, val roiSize: Int)
-private fun analyzeBrightness(imageProxy: ImageProxy): BrightnessResult {
+private fun analyzeBrightness(imageProxy: ImageProxy, roiSizeRatio: Int ): BrightnessResult {
     return try {
         val buffer = imageProxy.planes[0].buffer
         val bytes = ByteArray(buffer.remaining())
@@ -172,15 +241,18 @@ private fun analyzeBrightness(imageProxy: ImageProxy): BrightnessResult {
         val grayMat = Mat()
         Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_YUV2GRAY_420)
 
+//        Imgproc.cvtColor(mat, grayMat, Imgproc.COLOR_YUV2BGR)
+//        Imgproc.cvtColor(grayMat, grayMat, Imgproc.COLOR_BGR2GRAY)
+
         // Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to enhance contrast
         val clahe = Imgproc.createCLAHE(3.0)
         val enhancedMat = Mat()
         clahe.apply(grayMat, enhancedMat)
 
         // Apply Gaussian Blur to reduce noise
-        Imgproc.GaussianBlur(enhancedMat, enhancedMat, Size(5.0, 5.0), 0.0)
+        //Imgproc.GaussianBlur(enhancedMat, enhancedMat, Size(5.0, 5.0), 0.0)
         // Define the larger ROI
-        val roiSize = minOf(width, height) / 3
+        val roiSize = minOf(width, height) / roiSizeRatio
 
         val roiX = (width - roiSize) / 2
         val roiY = (height - roiSize) / 2
