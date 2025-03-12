@@ -511,7 +511,7 @@ fun MyLottieSplashScreen(onSplashComplete: () -> Unit) {
 
         MyLottie()
     }
-
+//push check
     LaunchedEffect(Unit) {
         delay(2750)
         onSplashComplete()
